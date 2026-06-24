@@ -26,6 +26,7 @@
         <div class="eyebrow">Recitation Central</div>
         <h1>Class Leaderboard</h1>
         <p id="teacherLabel">Loading teacher leaderboard...</p>
+        <div class="credit">Developed by Mr. John Rey Tubello (Sir JR)</div>
       </div>
       <div class="stats">
         <div class="stat"><strong id="studentCount">0</strong><span>Students</span></div>
@@ -35,7 +36,7 @@
     </header>
 
     <section class="panel">
-      <div class="filter-row" style="grid-template-columns:minmax(0,1.2fr) minmax(160px,.55fr) minmax(0,1fr) auto;">
+      <div class="filter-row" style="grid-template-columns:minmax(0,1.2fr) minmax(160px,.55fr) minmax(150px,.55fr) minmax(0,1fr) auto;">
         <div>
           <label for="sectionSelect">Section</label>
           <select id="sectionSelect"><option value="">Loading sections...</option></select>
@@ -48,6 +49,16 @@
             <option value="pointsAsc">Lowest Points</option>
             <option value="az">Alphabetical A-Z</option>
             <option value="za">Alphabetical Z-A</option>
+          </select>
+        </div>
+        <div>
+          <label for="termSelect">Term</label>
+          <select id="termSelect">
+            <option value="current">Current Term</option>
+            <option value="term1">Term 1</option>
+            <option value="term2">Term 2</option>
+            <option value="term3">Term 3</option>
+            <option value="allTime">All Time</option>
           </select>
         </div>
         <div>
@@ -105,6 +116,7 @@
     const teacherLabel = document.getElementById("teacherLabel");
     const sectionSelect = document.getElementById("sectionSelect");
     const sortSelect = document.getElementById("sortSelect");
+    const termSelect = document.getElementById("termSelect");
     const searchInput = document.getElementById("searchInput");
     const refreshButton = document.getElementById("refreshButton");
     const status = document.getElementById("status");
@@ -130,6 +142,41 @@
 
     function normalize(value) {
       return String(value || "").trim();
+    }
+
+    function getSchoolYear(date) {
+      const year = date.getFullYear();
+      const month = date.getMonth() + 1;
+      if (month >= 1 && month <= 4) return (year - 1) + "-" + year;
+      return year + "-" + (year + 1);
+    }
+
+    function getTermInfo(date = new Date()) {
+      const monthDay = (date.getMonth() + 1) * 100 + date.getDate();
+      const schoolYear = getSchoolYear(date);
+      if (monthDay >= 601 && monthDay <= 909) return { id: "term1", name: "Term 1", schoolYear };
+      if (monthDay >= 910 && monthDay <= 1215) return { id: "term2", name: "Term 2", schoolYear };
+      if (monthDay >= 104 && monthDay <= 403) return { id: "term3", name: "Term 3", schoolYear };
+      return { id: "outOfTerm", name: "Outside Term", schoolYear };
+    }
+
+    function selectedTermId() {
+      return termSelect.value === "current" ? getTermInfo().id : termSelect.value;
+    }
+
+    function selectedTermLabel() {
+      const value = termSelect.value;
+      if (value === "current") return getTermInfo().name + " (Current)";
+      if (value === "term1") return "Term 1";
+      if (value === "term2") return "Term 2";
+      if (value === "term3") return "Term 3";
+      return "All Time";
+    }
+
+    function pointsFor(student) {
+      const termId = selectedTermId();
+      if (termId === "allTime") return Number(student.totalPoints) || 0;
+      return Number((student.termTotals || {})[termId]) || 0;
     }
 
     function latestMillis(student) {
@@ -159,6 +206,7 @@
         fullName: normalize(data.fullName),
         section: normalize(data.section),
         totalPoints: Number(data.totalPoints) || 0,
+        termTotals: data.termTotals || {},
         latestPoints: Number(data.latestPoints) || 0,
         latestMillis: latest.millis,
         latestText: latest.text
@@ -188,15 +236,15 @@
       }).slice();
 
       if (sortValue === "latest") {
-        students.sort((a, b) => latestMillis(b) - latestMillis(a) || b.totalPoints - a.totalPoints || a.fullName.localeCompare(b.fullName));
+        students.sort((a, b) => latestMillis(b) - latestMillis(a) || pointsFor(b) - pointsFor(a) || a.fullName.localeCompare(b.fullName));
       } else if (sortValue === "pointsAsc") {
-        students.sort((a, b) => a.totalPoints - b.totalPoints || a.fullName.localeCompare(b.fullName));
+        students.sort((a, b) => pointsFor(a) - pointsFor(b) || a.fullName.localeCompare(b.fullName));
       } else if (sortValue === "az") {
         students.sort((a, b) => a.fullName.localeCompare(b.fullName));
       } else if (sortValue === "za") {
         students.sort((a, b) => b.fullName.localeCompare(a.fullName));
       } else {
-        students.sort((a, b) => b.totalPoints - a.totalPoints || latestMillis(b) - latestMillis(a) || a.fullName.localeCompare(b.fullName));
+        students.sort((a, b) => pointsFor(b) - pointsFor(a) || latestMillis(b) - latestMillis(a) || a.fullName.localeCompare(b.fullName));
       }
       return students;
     }
@@ -208,27 +256,27 @@
       card.innerHTML = '<div><div class="name"></div><div class="meta"></div></div><div class="points"></div>';
       card.querySelector(".name").textContent = student.fullName;
       card.querySelector(".meta").textContent = rank + " | " + student.section + (student.latestText ? "\nLatest: " + student.latestText : "");
-      card.querySelector(".points").textContent = student.totalPoints;
+      card.querySelector(".points").textContent = pointsFor(student);
       return card;
     }
 
     function render() {
       const students = getVisibleStudents();
-      const total = students.reduce((sum, student) => sum + student.totalPoints, 0);
+      const total = students.reduce((sum, student) => sum + pointsFor(student), 0);
       studentCount.textContent = students.length;
       totalPoints.textContent = total;
-      topScore.textContent = students.reduce((max, student) => Math.max(max, student.totalPoints), 0);
+      topScore.textContent = students.reduce((max, student) => Math.max(max, pointsFor(student)), 0);
       studentList.innerHTML = "";
       topList.innerHTML = "";
 
-      const topStudents = students.slice().sort((a, b) => b.totalPoints - a.totalPoints || latestMillis(b) - latestMillis(a)).slice(0, 3);
+      const topStudents = students.slice().sort((a, b) => pointsFor(b) - pointsFor(a) || latestMillis(b) - latestMillis(a)).slice(0, 3);
       topStudents.forEach((student, index) => topList.appendChild(makeStudentCard(student, index, true)));
       students.forEach((student, index) => studentList.appendChild(makeStudentCard(student, index, false)));
 
       if (!students.length) {
-        show("queued", "No students shown yet.");
+        show("queued", "No students shown yet. " + selectedTermLabel());
       } else {
-        show("success", "Live leaderboard connected.");
+        show("success", "Live leaderboard connected. Showing " + selectedTermLabel() + ".");
       }
     }
 
@@ -261,6 +309,7 @@
 
     sectionSelect.addEventListener("change", render);
     sortSelect.addEventListener("change", render);
+    termSelect.addEventListener("change", render);
     searchInput.addEventListener("input", render);
     refreshButton.addEventListener("click", subscribeData);
     subscribeData();

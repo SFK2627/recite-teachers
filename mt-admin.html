@@ -7,6 +7,7 @@
   <title>Multi-Teacher Admin</title>
   <link rel="manifest" href="mt-manifest.json">
   <link rel="stylesheet" href="mt-style.css">
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
 </head>
 <body>
   <main>
@@ -15,6 +16,7 @@
         <div class="eyebrow">Recitation Central</div>
         <h1>Admin</h1>
         <p>Manage only the students and logs under your signed-in teacher account.</p>
+        <div class="credit">Developed by Mr. John Rey Tubello (Sir JR)</div>
       </div>
       <a class="home-link" href="mt-index.html">Home</a>
     </header>
@@ -58,8 +60,18 @@
             <option value="pointsAsc">Lowest Points</option>
           </select>
         </div>
+        <div>
+          <label for="termSelect">Term</label>
+          <select id="termSelect">
+            <option value="current">Current Term</option>
+            <option value="term1">Term 1</option>
+            <option value="term2">Term 2</option>
+            <option value="term3">Term 3</option>
+            <option value="allTime">All Time</option>
+          </select>
+        </div>
         <button id="refreshButton" class="secondary" type="button">Reconnect</button>
-        <button id="exportTotalsButton" class="secondary" type="button">Export Totals</button>
+        <button id="exportTotalsButton" class="secondary" type="button">Export Totals XLSX</button>
         <button id="exportLogsButton" class="secondary" type="button">Export Logs</button>
       </div>
 
@@ -93,6 +105,14 @@
           <label for="sectionInput">Section</label>
           <input id="sectionInput" type="text" list="sectionOptions" placeholder="Section">
           <datalist id="sectionOptions"></datalist>
+        </div>
+        <div>
+          <label for="genderInput">Gender</label>
+          <select id="genderInput">
+            <option value="">Not set</option>
+            <option value="Male">Male / Boy</option>
+            <option value="Female">Female / Girl</option>
+          </select>
         </div>
       </div>
 
@@ -154,6 +174,7 @@
     const adminPanel = document.getElementById("adminPanel");
     const sectionFilter = document.getElementById("sectionFilter");
     const sortSelect = document.getElementById("sortSelect");
+    const termSelect = document.getElementById("termSelect");
     const searchInput = document.getElementById("searchInput");
     const refreshButton = document.getElementById("refreshButton");
     const exportTotalsButton = document.getElementById("exportTotalsButton");
@@ -167,6 +188,7 @@
     const studentIdInput = document.getElementById("studentIdInput");
     const fullNameInput = document.getElementById("fullNameInput");
     const sectionInput = document.getElementById("sectionInput");
+    const genderInput = document.getElementById("genderInput");
     const sectionOptions = document.getElementById("sectionOptions");
     const addButton = document.getElementById("addButton");
     const saveButton = document.getElementById("saveButton");
@@ -193,6 +215,71 @@
 
     function normalizeSectionId(sectionName) {
       return normalize(sectionName).replace(/[\/\\#?[\]]/g, "-") || "untitled-section";
+    }
+
+    function getSchoolYear(date) {
+      const year = date.getFullYear();
+      const month = date.getMonth() + 1;
+      if (month >= 1 && month <= 4) {
+        return (year - 1) + "-" + year;
+      }
+      return year + "-" + (year + 1);
+    }
+
+    function getTermInfo(date = new Date()) {
+      const monthDay = (date.getMonth() + 1) * 100 + date.getDate();
+      const schoolYear = getSchoolYear(date);
+      if (monthDay >= 601 && monthDay <= 909) return { id: "term1", name: "Term 1", schoolYear };
+      if (monthDay >= 910 && monthDay <= 1215) return { id: "term2", name: "Term 2", schoolYear };
+      if (monthDay >= 104 && monthDay <= 403) return { id: "term3", name: "Term 3", schoolYear };
+      return { id: "outOfTerm", name: "Outside Term", schoolYear };
+    }
+
+    function selectedTermId() {
+      return termSelect.value === "current" ? getTermInfo().id : termSelect.value;
+    }
+
+    function selectedTermLabel() {
+      const value = termSelect.value;
+      if (value === "current") return getTermInfo().name + " (Current)";
+      if (value === "term1") return "Term 1";
+      if (value === "term2") return "Term 2";
+      if (value === "term3") return "Term 3";
+      return "All Time";
+    }
+
+    function pointsFor(student) {
+      const termId = selectedTermId();
+      if (termId === "allTime") return Number(student.totalPoints) || 0;
+      return Number((student.termTotals || {})[termId]) || 0;
+    }
+
+    function normalizeGender(value) {
+      const text = normalize(value).toLowerCase();
+      if (["m", "male", "boy", "boys", "lalaki"].includes(text)) return "Male";
+      if (["f", "female", "girl", "girls", "babae"].includes(text)) return "Female";
+      return "";
+    }
+
+    function genderRank(value) {
+      const gender = normalizeGender(value);
+      if (gender === "Male") return 1;
+      if (gender === "Female") return 2;
+      return 3;
+    }
+
+    function safeSheetName(name, usedNames) {
+      let base = normalize(name).replace(/[\\/?*[\]:]/g, " ").replace(/\s+/g, " ").trim() || "Section";
+      base = base.slice(0, 31);
+      let finalName = base;
+      let counter = 2;
+      while (usedNames.has(finalName)) {
+        const suffix = " " + counter;
+        finalName = base.slice(0, 31 - suffix.length) + suffix;
+        counter += 1;
+      }
+      usedNames.add(finalName);
+      return finalName;
     }
 
     function teacherDocPath(...parts) {
@@ -234,7 +321,9 @@
         studentId: normalize(data.studentId || docSnap.id),
         fullName: normalize(data.fullName),
         section: normalize(data.section),
+        gender: normalizeGender(data.gender),
         totalPoints: Number(data.totalPoints) || 0,
+        termTotals: data.termTotals || {},
         latestPoints: Number(data.latestPoints) || 0,
         latestMillis: latest.millis,
         latestText: latest.text
@@ -264,17 +353,17 @@
       const students = allStudents.filter((student) => {
         if (selectedSection && student.section !== selectedSection) return false;
         if (!searchText) return true;
-        return [student.studentId, student.fullName, student.section].join(" ").toLowerCase().includes(searchText);
+        return [student.studentId, student.fullName, student.section, student.gender].join(" ").toLowerCase().includes(searchText);
       }).slice();
 
       if (sortValue === "latest") {
         students.sort((a, b) => b.latestMillis - a.latestMillis || a.fullName.localeCompare(b.fullName));
       } else if (sortValue === "pointsAsc") {
-        students.sort((a, b) => a.totalPoints - b.totalPoints || a.fullName.localeCompare(b.fullName));
+        students.sort((a, b) => pointsFor(a) - pointsFor(b) || a.fullName.localeCompare(b.fullName));
       } else if (sortValue === "az") {
         students.sort((a, b) => a.fullName.localeCompare(b.fullName));
       } else {
-        students.sort((a, b) => b.totalPoints - a.totalPoints || b.latestMillis - a.latestMillis || a.fullName.localeCompare(b.fullName));
+        students.sort((a, b) => pointsFor(b) - pointsFor(a) || b.latestMillis - a.latestMillis || a.fullName.localeCompare(b.fullName));
       }
       return students;
     }
@@ -282,7 +371,7 @@
     function renderStudents() {
       const students = getVisibleStudents();
       studentList.innerHTML = "";
-      show(summary, students.length ? "queued" : "error", students.length ? students.length + " student(s) shown." : "No students found.");
+      show(summary, students.length ? "queued" : "error", students.length ? students.length + " student(s) shown | " + selectedTermLabel() : "No students found.");
 
       students.forEach((student) => {
         const card = document.createElement("div");
@@ -291,8 +380,10 @@
         card.setAttribute("role", "button");
         card.innerHTML = '<div><div class="name"></div><div class="meta"></div></div><div class="points"></div>';
         card.querySelector(".name").textContent = student.fullName;
-        card.querySelector(".meta").textContent = student.studentId + " | " + student.section + (student.latestText ? "\nLatest: " + student.latestText : "");
-        card.querySelector(".points").textContent = student.totalPoints + " pts";
+        card.querySelector(".meta").textContent = student.studentId + " | " + student.section +
+          (student.gender ? " | " + student.gender : "") +
+          (student.latestText ? "\nLatest: " + student.latestText : "");
+        card.querySelector(".points").textContent = pointsFor(student) + " pts";
         card.addEventListener("click", () => openModal("edit", student));
         card.addEventListener("keydown", (event) => {
           if (event.key === "Enter" || event.key === " ") {
@@ -323,16 +414,58 @@
     }
 
     function exportTotals() {
-      const students = allStudents.slice().sort((a, b) => a.section.localeCompare(b.section) || a.fullName.localeCompare(b.fullName));
+      if (!window.XLSX) {
+        show(resultBox, "error", "Excel export library did not load. Please check internet connection and try again.");
+        return;
+      }
+
+      const students = allStudents.slice().sort((a, b) => {
+        return a.section.localeCompare(b.section) ||
+          genderRank(a.gender) - genderRank(b.gender) ||
+          a.fullName.localeCompare(b.fullName);
+      });
+
       if (!students.length) {
         show(resultBox, "error", "No students to export.");
         return;
       }
-      downloadCsv("recitation-my-totals-" + new Date().toISOString().slice(0, 10) + ".csv", [
-        ["Section", "Student ID", "Full Name", "Total Points", "Latest Points", "Latest Recitation"],
-        ...students.map((student) => [student.section, student.studentId, student.fullName, student.totalPoints, student.latestPoints, student.latestText])
-      ]);
-      show(resultBox, "success", "Exported totals for " + students.length + " student(s).");
+
+      const workbook = XLSX.utils.book_new();
+      const usedNames = new Set();
+      const sections = Array.from(new Set(students.map((student) => student.section || "No Section"))).sort();
+
+      sections.forEach((sectionName) => {
+        const sectionStudents = students
+          .filter((student) => (student.section || "No Section") === sectionName)
+          .sort((a, b) => genderRank(a.gender) - genderRank(b.gender) || a.fullName.localeCompare(b.fullName));
+
+        const rows = [
+          ["Student ID", "Full Name", "Points", "Gender", "Latest Points", "Latest Recitation"],
+          ...sectionStudents.map((student) => [
+            student.studentId,
+            student.fullName,
+            pointsFor(student),
+            student.gender || "",
+            student.latestPoints,
+            student.latestText
+          ])
+        ];
+
+        const worksheet = XLSX.utils.aoa_to_sheet(rows);
+        worksheet["!cols"] = [
+          { wch: 18 },
+          { wch: 34 },
+          { wch: 12 },
+          { wch: 12 },
+          { wch: 14 },
+          { wch: 24 }
+        ];
+        XLSX.utils.book_append_sheet(workbook, worksheet, safeSheetName(sectionName, usedNames));
+      });
+
+      const termSlug = selectedTermLabel().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+      XLSX.writeFile(workbook, "recitation-totals-" + termSlug + "-by-section-" + new Date().toISOString().slice(0, 10) + ".xlsx");
+      show(resultBox, "success", "Exported " + selectedTermLabel() + " totals by section: " + students.length + " student(s).");
     }
 
     async function exportLogs() {
@@ -347,8 +480,8 @@
           return bTime - aTime;
         });
         downloadCsv("recitation-my-logs-" + new Date().toISOString().slice(0, 10) + ".csv", [
-          ["Date/Time", "Section", "Student ID", "Full Name", "Points", "Activity"],
-          ...logs.map((log) => [formatCsvTimestamp(log.createdAt), log.section || "", log.studentId || "", log.fullName || "", Number(log.points) || 0, log.activity || ""])
+          ["Date/Time", "School Year", "Term", "Section", "Student ID", "Full Name", "Points", "Activity"],
+          ...logs.map((log) => [formatCsvTimestamp(log.createdAt), log.schoolYear || "", log.termName || "", log.section || "", log.studentId || "", log.fullName || "", Number(log.points) || 0, log.activity || ""])
         ]);
         show(resultBox, "success", "Exported " + logs.length + " log record(s).");
       } catch (error) {
@@ -368,6 +501,7 @@
       studentIdInput.value = isEdit ? student.studentId : "";
       fullNameInput.value = isEdit ? student.fullName : "";
       sectionInput.value = isEdit ? student.section : sectionFilter.value || "";
+      genderInput.value = isEdit ? normalizeGender(student.gender) : "";
       studentModal.classList.add("active");
       studentModal.setAttribute("aria-hidden", "false");
     }
@@ -382,6 +516,7 @@
       const studentId = normalize(studentIdInput.value);
       const fullName = normalize(fullNameInput.value);
       const section = normalize(sectionInput.value);
+      const gender = normalizeGender(genderInput.value);
       if (!studentId || !fullName || !section) {
         show(resultBox, "error", "Student ID, full name, and section are required.");
         return;
@@ -395,6 +530,7 @@
           studentId,
           fullName,
           section,
+          gender,
           totalPoints: mode === "add" ? 0 : Number(existing?.totalPoints || 0),
           updatedAt: serverTimestamp()
         }, { merge: true });
@@ -501,6 +637,7 @@
     deleteButton.addEventListener("click", deleteStudent);
     sectionFilter.addEventListener("change", renderStudents);
     sortSelect.addEventListener("change", renderStudents);
+    termSelect.addEventListener("change", renderStudents);
     searchInput.addEventListener("input", renderStudents);
     refreshButton.addEventListener("click", subscribeData);
     exportTotalsButton.addEventListener("click", exportTotals);

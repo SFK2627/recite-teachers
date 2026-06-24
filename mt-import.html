@@ -7,6 +7,7 @@
   <title>Multi-Teacher Import</title>
   <link rel="manifest" href="mt-manifest.json">
   <link rel="stylesheet" href="mt-style.css">
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
 </head>
 <body>
   <main>
@@ -15,6 +16,7 @@
         <div class="eyebrow">Recitation Central</div>
         <h1>Import Students</h1>
         <p>Paste rows from Sheets into the signed-in teacher account only.</p>
+        <div class="credit">Developed by Mr. John Rey Tubello (Sir JR)</div>
       </div>
       <a class="home-link" href="mt-index.html">Home</a>
     </header>
@@ -37,11 +39,16 @@
     </section>
 
     <section id="importPanel" class="panel" hidden>
-      <p class="panel-title">Paste Student Rows</p>
+      <p class="panel-title">Import Student Rows</p>
       <p style="margin-top:0;color:var(--muted);font-weight:800;line-height:1.4;">
-        Accepted columns per row: <strong>Section, Student ID, Full Name</strong> or <strong>Student ID, Full Name, Section</strong>.
-        Tabs from Google Sheets and commas both work.
+        Preferred columns: <strong>Student ID, Full Name, Section, Gender</strong>.
+        Gender is optional, but needed for Boys first then Girls export sorting.
       </p>
+      <label for="fileInput">Upload Excel / CSV</label>
+      <input id="fileInput" type="file" accept=".xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel">
+      <button id="previewFileButton" class="secondary" type="button" style="margin-top:10px;">Preview File</button>
+      <div id="previewBox" class="result"></div>
+      <p style="color:var(--muted);font-weight:800;text-align:center;">or paste rows below</p>
       <textarea id="importText" placeholder="Section, Student ID, Full Name&#10;Grade 8 - SFK, 18-00001, Dela Cruz, Juan"></textarea>
       <button id="importButton" type="button" style="margin-top:10px;">Import Students</button>
       <div id="result" class="result"></div>
@@ -90,9 +97,13 @@
     const signInButton = document.getElementById("signInButton");
     const signOutButton = document.getElementById("signOutButton");
     const authResult = document.getElementById("authResult");
+    const fileInput = document.getElementById("fileInput");
+    const previewFileButton = document.getElementById("previewFileButton");
+    const previewBox = document.getElementById("previewBox");
     const importText = document.getElementById("importText");
     const importButton = document.getElementById("importButton");
     const resultBox = document.getElementById("result");
+    let fileRows = [];
 
     function show(box, type, message) {
       box.className = "result " + type;
@@ -105,6 +116,13 @@
 
     function normalizeSectionId(sectionName) {
       return normalize(sectionName).replace(/[\/\\#?[\]]/g, "-") || "untitled-section";
+    }
+
+    function normalizeGender(value) {
+      const text = normalize(value).toLowerCase();
+      if (["m", "male", "boy", "boys", "lalaki"].includes(text)) return "Male";
+      if (["f", "female", "girl", "girls", "babae"].includes(text)) return "Female";
+      return "";
     }
 
     function splitLine(line) {
@@ -127,21 +145,101 @@
       return parts;
     }
 
-    function parseRows(text) {
+    function headerIndex(headers, names) {
+      return headers.findIndex((header) => names.includes(normalize(header).toLowerCase()));
+    }
+
+    function parseMatrix(matrix) {
       const rows = [];
-      const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-      lines.forEach((line) => {
-        const parts = splitLine(line).filter(Boolean);
+      const cleanRows = matrix
+        .map((row) => row.map(normalize))
+        .filter((row) => row.some(Boolean));
+
+      if (!cleanRows.length) return rows;
+
+      const firstRow = cleanRows[0].map((cell) => cell.toLowerCase());
+      const hasHeader = firstRow.some((cell) => /student\s*id|full\s*name|section|gender|sex/.test(cell));
+      const dataRows = hasHeader ? cleanRows.slice(1) : cleanRows;
+
+      let studentIdIndex = -1;
+      let fullNameIndex = -1;
+      let sectionIndex = -1;
+      let genderIndex = -1;
+
+      if (hasHeader) {
+        studentIdIndex = headerIndex(firstRow, ["student id", "studentid", "id", "lrn"]);
+        fullNameIndex = headerIndex(firstRow, ["full name", "fullname", "name", "student name"]);
+        sectionIndex = headerIndex(firstRow, ["section", "class", "grade section"]);
+        genderIndex = headerIndex(firstRow, ["gender", "sex"]);
+      }
+
+      dataRows.forEach((parts) => {
         if (parts.length < 3) return;
-        const looksLikeStudentFirst = /^\d/.test(parts[0]);
-        const studentId = looksLikeStudentFirst ? parts[0] : parts[1];
-        const fullName = looksLikeStudentFirst ? parts[1] : parts.slice(2).join(", ");
-        const section = looksLikeStudentFirst ? parts.slice(2).join(", ") : parts[0];
+
+        let studentId = "";
+        let fullName = "";
+        let section = "";
+        let gender = "";
+
+        if (studentIdIndex >= 0 && fullNameIndex >= 0 && sectionIndex >= 0) {
+          studentId = parts[studentIdIndex] || "";
+          fullName = parts[fullNameIndex] || "";
+          section = parts[sectionIndex] || "";
+          gender = genderIndex >= 0 ? parts[genderIndex] || "" : "";
+        } else {
+          const looksLikeStudentFirst = /^\d/.test(parts[0]);
+          studentId = looksLikeStudentFirst ? parts[0] : parts[1];
+          fullName = looksLikeStudentFirst ? parts[1] : parts[2];
+          section = looksLikeStudentFirst ? parts[2] : parts[0];
+          gender = parts[3] || "";
+        }
+
         if (!studentId || !fullName || !section) return;
         if (/student id/i.test(studentId) || /full name/i.test(fullName)) return;
-        rows.push({ studentId, fullName, section });
+        rows.push({ studentId, fullName, section, gender: normalizeGender(gender) });
       });
+
       return rows;
+    }
+
+    function parseRows(text) {
+      const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      return parseMatrix(lines.map((line) => splitLine(line).filter(Boolean)));
+    }
+
+    async function readFileRows(file) {
+      if (!file) return [];
+
+      const extension = file.name.toLowerCase().split(".").pop();
+
+      if (extension === "csv") {
+        const text = await file.text();
+        return parseRows(text);
+      }
+
+      if (!window.XLSX) {
+        throw new Error("Excel parser did not load. Please check internet connection and try again.");
+      }
+
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: "array" });
+      const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+      const matrix = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: "" });
+      return parseMatrix(matrix);
+    }
+
+    async function previewFile() {
+      try {
+        fileRows = await readFileRows(fileInput.files[0]);
+        const sections = Array.from(new Set(fileRows.map((row) => row.section))).length;
+        const withGender = fileRows.filter((row) => row.gender).length;
+        show(previewBox, fileRows.length ? "success" : "error", fileRows.length
+          ? "File ready: " + fileRows.length + " student(s), " + sections + " section(s), " + withGender + " with gender."
+          : "No valid rows found in file.");
+      } catch (error) {
+        fileRows = [];
+        show(previewBox, "error", "File preview failed:\n" + error.message);
+      }
     }
 
     async function importStudents() {
@@ -150,7 +248,16 @@
         return;
       }
 
-      const rows = parseRows(importText.value);
+      let rows = fileRows.length ? fileRows : [];
+
+      if (!rows.length && fileInput.files[0]) {
+        rows = await readFileRows(fileInput.files[0]);
+      }
+
+      if (!rows.length) {
+        rows = parseRows(importText.value);
+      }
+
       if (!rows.length) {
         show(resultBox, "error", "No valid rows found.");
         return;
@@ -169,8 +276,7 @@
             studentId: row.studentId,
             fullName: row.fullName,
             section: row.section,
-            totalPoints: 0,
-            latestPoints: 0,
+            gender: row.gender || "",
             updatedAt: serverTimestamp()
           }, { merge: true });
 
@@ -237,6 +343,12 @@
       if (event.key === "Enter") signInTeacher();
     });
     importButton.addEventListener("click", importStudents);
+    previewFileButton.addEventListener("click", previewFile);
+    fileInput.addEventListener("change", () => {
+      fileRows = [];
+      previewBox.className = "result";
+      previewBox.textContent = "";
+    });
   </script>
 </body>
 </html>

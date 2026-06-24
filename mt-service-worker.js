@@ -1,4 +1,4 @@
-const CACHE_NAME = "recitation-multiteacher-v1";
+const CACHE_NAME = "recitation-multiteacher-v3-terms-credit";
 const APP_SHELL = [
   "./mt-index.html",
   "./mt-scanner.html",
