@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111827">
+  <title>Multi-Teacher Leaderboard</title>
+  <link rel="manifest" href="mt-manifest.json">
+  <link rel="stylesheet" href="mt-style.css">
+  <style>
+    main { width: min(1500px, 100%); }
+    .stats { display:grid; grid-template-columns:repeat(3,minmax(120px,1fr)); gap:10px; }
+    .stat { border:1px solid rgba(255,255,255,.14); border-radius:18px; padding:14px; background:rgba(255,255,255,.08); text-align:center; }
+    .stat strong { display:block; color:var(--yellow); font-size:42px; line-height:1; }
+    .stat span { color:rgba(255,255,255,.76); font-size:12px; font-weight:900; text-transform:uppercase; }
+    .leaderboard-grid { display:grid; grid-template-columns:minmax(280px,.42fr) minmax(0,1fr); gap:14px; }
+    .student-rank { font-size:22px; font-weight:950; }
+    .points { font-size:22px; }
+    @media (max-width:900px){ .leaderboard-grid,.stats{grid-template-columns:1fr;} }
+  </style>
+</head>
+<body>
+  <main>
+    <header class="hero">
+      <div>
+        <div class="eyebrow">Recitation Central</div>
+        <h1>Class Leaderboard</h1>
+        <p id="teacherLabel">Loading teacher leaderboard...</p>
+      </div>
+      <div class="stats">
+        <div class="stat"><strong id="studentCount">0</strong><span>Students</span></div>
+        <div class="stat"><strong id="totalPoints">0</strong><span>Total Points</span></div>
+        <div class="stat"><strong id="topScore">0</strong><span>Top Score</span></div>
+      </div>
+    </header>
+
+    <section class="panel">
+      <div class="filter-row" style="grid-template-columns:minmax(0,1.2fr) minmax(160px,.55fr) minmax(0,1fr) auto;">
+        <div>
+          <label for="sectionSelect">Section</label>
+          <select id="sectionSelect"><option value="">Loading sections...</option></select>
+        </div>
+        <div>
+          <label for="sortSelect">Sort</label>
+          <select id="sortSelect">
+            <option value="latest">Latest Recitation</option>
+            <option value="pointsDesc">Highest Points</option>
+            <option value="pointsAsc">Lowest Points</option>
+            <option value="az">Alphabetical A-Z</option>
+            <option value="za">Alphabetical Z-A</option>
+          </select>
+        </div>
+        <div>
+          <label for="searchInput">Search</label>
+          <input id="searchInput" type="search" placeholder="Search student name">
+        </div>
+        <button id="refreshButton" type="button">Reconnect</button>
+      </div>
+      <div id="status" class="result loading">Loading leaderboard...</div>
+    </section>
+
+    <section class="leaderboard-grid">
+      <aside class="panel">
+        <p class="panel-title">Top 3</p>
+        <div id="topList" class="list"></div>
+      </aside>
+      <section class="panel">
+        <p class="panel-title">Student Rankings</p>
+        <div id="studentList" class="list"></div>
+      </section>
+    </section>
+  </main>
+
+  <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("mt-service-worker.js").catch(() => {});
+    }
+  </script>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+    import {
+      collection,
+      doc,
+      getDoc,
+      getFirestore,
+      onSnapshot,
+      orderBy,
+      query
+    } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyBzUfZBwJBzn1-BjRhR7humRqtO-9LC2Gs",
+      authDomain: "recitation-central-mteacher.firebaseapp.com",
+      projectId: "recitation-central-mteacher",
+      storageBucket: "recitation-central-mteacher.firebasestorage.app",
+      messagingSenderId: "490494017979",
+      appId: "1:490494017979:web:2e71c87ab0578ef4df6093",
+      measurementId: "G-BN4V8X3JE5"
+    };
+
+    const teacherId = new URLSearchParams(window.location.search).get("teacher") || "";
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    const teacherLabel = document.getElementById("teacherLabel");
+    const sectionSelect = document.getElementById("sectionSelect");
+    const sortSelect = document.getElementById("sortSelect");
+    const searchInput = document.getElementById("searchInput");
+    const refreshButton = document.getElementById("refreshButton");
+    const status = document.getElementById("status");
+    const topList = document.getElementById("topList");
+    const studentList = document.getElementById("studentList");
+    const studentCount = document.getElementById("studentCount");
+    const totalPoints = document.getElementById("totalPoints");
+    const topScore = document.getElementById("topScore");
+
+    let allStudents = [];
+    let allSections = [];
+    let unsubscribeStudents = null;
+    let unsubscribeSections = null;
+
+    function show(type, message) {
+      status.className = "result " + type;
+      status.textContent = message;
+    }
+
+    function teacherPath(...parts) {
+      return ["teachers", teacherId, ...parts];
+    }
+
+    function normalize(value) {
+      return String(value || "").trim();
+    }
+
+    function latestMillis(student) {
+      return Number(student.latestMillis || 0);
+    }
+
+    function formatTimestamp(value) {
+      if (!value || typeof value.toMillis !== "function") return { millis: 0, text: "" };
+      const millis = value.toMillis();
+      return {
+        millis,
+        text: new Date(millis).toLocaleString("en-PH", {
+          month: "short",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit"
+        })
+      };
+    }
+
+    function normalizeStudent(docSnap) {
+      const data = docSnap.data() || {};
+      const latest = formatTimestamp(data.latestAt);
+      return {
+        studentId: normalize(data.studentId || docSnap.id),
+        fullName: normalize(data.fullName),
+        section: normalize(data.section),
+        totalPoints: Number(data.totalPoints) || 0,
+        latestPoints: Number(data.latestPoints) || 0,
+        latestMillis: latest.millis,
+        latestText: latest.text
+      };
+    }
+
+    function renderSections() {
+      const current = sectionSelect.value;
+      sectionSelect.innerHTML = '<option value="">All sections</option>';
+      allSections.forEach((sectionName) => {
+        const option = document.createElement("option");
+        option.value = sectionName;
+        option.textContent = sectionName;
+        sectionSelect.appendChild(option);
+      });
+      sectionSelect.value = allSections.includes(current) ? current : "";
+    }
+
+    function getVisibleStudents() {
+      const selectedSection = sectionSelect.value;
+      const searchText = searchInput.value.trim().toLowerCase();
+      const sortValue = sortSelect.value;
+      const students = allStudents.filter((student) => {
+        if (selectedSection && student.section !== selectedSection) return false;
+        if (!searchText) return true;
+        return [student.studentId, student.fullName, student.section].join(" ").toLowerCase().includes(searchText);
+      }).slice();
+
+      if (sortValue === "latest") {
+        students.sort((a, b) => latestMillis(b) - latestMillis(a) || b.totalPoints - a.totalPoints || a.fullName.localeCompare(b.fullName));
+      } else if (sortValue === "pointsAsc") {
+        students.sort((a, b) => a.totalPoints - b.totalPoints || a.fullName.localeCompare(b.fullName));
+      } else if (sortValue === "az") {
+        students.sort((a, b) => a.fullName.localeCompare(b.fullName));
+      } else if (sortValue === "za") {
+        students.sort((a, b) => b.fullName.localeCompare(a.fullName));
+      } else {
+        students.sort((a, b) => b.totalPoints - a.totalPoints || latestMillis(b) - latestMillis(a) || a.fullName.localeCompare(b.fullName));
+      }
+      return students;
+    }
+
+    function makeStudentCard(student, index, compact) {
+      const card = document.createElement("div");
+      card.className = "row-card";
+      const rank = compact ? "#" + (index + 1) : "Rank #" + (index + 1);
+      card.innerHTML = '<div><div class="name"></div><div class="meta"></div></div><div class="points"></div>';
+      card.querySelector(".name").textContent = student.fullName;
+      card.querySelector(".meta").textContent = rank + " | " + student.section + (student.latestText ? "\nLatest: " + student.latestText : "");
+      card.querySelector(".points").textContent = student.totalPoints;
+      return card;
+    }
+
+    function render() {
+      const students = getVisibleStudents();
+      const total = students.reduce((sum, student) => sum + student.totalPoints, 0);
+      studentCount.textContent = students.length;
+      totalPoints.textContent = total;
+      topScore.textContent = students.reduce((max, student) => Math.max(max, student.totalPoints), 0);
+      studentList.innerHTML = "";
+      topList.innerHTML = "";
+
+      const topStudents = students.slice().sort((a, b) => b.totalPoints - a.totalPoints || latestMillis(b) - latestMillis(a)).slice(0, 3);
+      topStudents.forEach((student, index) => topList.appendChild(makeStudentCard(student, index, true)));
+      students.forEach((student, index) => studentList.appendChild(makeStudentCard(student, index, false)));
+
+      if (!students.length) {
+        show("queued", "No students shown yet.");
+      } else {
+        show("success", "Live leaderboard connected.");
+      }
+    }
+
+    async function loadTeacher() {
+      if (!teacherId) {
+        show("error", "Missing teacher ID in URL. Use mt-view.html?teacher=TEACHER_UID");
+        teacherLabel.textContent = "Missing teacher link.";
+        return false;
+      }
+      const teacherSnap = await getDoc(doc(db, "teachers", teacherId));
+      const teacher = teacherSnap.data() || {};
+      teacherLabel.textContent = "Leaderboard for " + (teacher.displayName || teacher.email || "Teacher");
+      return true;
+    }
+
+    async function subscribeData() {
+      if (!(await loadTeacher())) return;
+      show("loading", "Connecting to Firebase...");
+      if (unsubscribeStudents) unsubscribeStudents();
+      if (unsubscribeSections) unsubscribeSections();
+      unsubscribeSections = onSnapshot(query(collection(db, ...teacherPath("sections")), orderBy("name")), (snapshot) => {
+        allSections = snapshot.docs.map((docSnap) => normalize((docSnap.data() || {}).name || docSnap.id)).filter(Boolean);
+        renderSections();
+      }, (error) => show("error", "Sections error:\n" + error.message));
+      unsubscribeStudents = onSnapshot(collection(db, ...teacherPath("students")), (snapshot) => {
+        allStudents = snapshot.docs.map(normalizeStudent);
+        render();
+      }, (error) => show("error", "Students error:\n" + error.message));
+    }
+
+    sectionSelect.addEventListener("change", render);
+    sortSelect.addEventListener("change", render);
+    searchInput.addEventListener("input", render);
+    refreshButton.addEventListener("click", subscribeData);
+    subscribeData();
+  </script>
+</body>
+</html>

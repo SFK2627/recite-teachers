@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111827">
+  <title>Multi-Teacher Import</title>
+  <link rel="manifest" href="mt-manifest.json">
+  <link rel="stylesheet" href="mt-style.css">
+</head>
+<body>
+  <main>
+    <header class="hero">
+      <div>
+        <div class="eyebrow">Recitation Central</div>
+        <h1>Import Students</h1>
+        <p>Paste rows from Sheets into the signed-in teacher account only.</p>
+      </div>
+      <a class="home-link" href="mt-index.html">Home</a>
+    </header>
+
+    <section id="authPanel" class="panel compact-panel">
+      <p class="panel-title">Teacher Sign In</p>
+      <div class="auth-row">
+        <div class="auth-field">
+          <label for="teacherEmail">Email</label>
+          <input id="teacherEmail" type="email" autocomplete="username" placeholder="Teacher email">
+        </div>
+        <div class="auth-field">
+          <label for="teacherPassword">Password</label>
+          <input id="teacherPassword" type="password" autocomplete="current-password" placeholder="Password">
+        </div>
+        <button id="signInButton" type="button">Sign In</button>
+        <button id="signOutButton" class="secondary" type="button" hidden>Sign Out</button>
+      </div>
+      <div id="authResult" class="result"></div>
+    </section>
+
+    <section id="importPanel" class="panel" hidden>
+      <p class="panel-title">Paste Student Rows</p>
+      <p style="margin-top:0;color:var(--muted);font-weight:800;line-height:1.4;">
+        Accepted columns per row: <strong>Section, Student ID, Full Name</strong> or <strong>Student ID, Full Name, Section</strong>.
+        Tabs from Google Sheets and commas both work.
+      </p>
+      <textarea id="importText" placeholder="Section, Student ID, Full Name&#10;Grade 8 - SFK, 18-00001, Dela Cruz, Juan"></textarea>
+      <button id="importButton" type="button" style="margin-top:10px;">Import Students</button>
+      <div id="result" class="result"></div>
+    </section>
+  </main>
+
+  <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("mt-service-worker.js").catch(() => {});
+    }
+  </script>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+    import {
+      getAuth,
+      onAuthStateChanged,
+      signInWithEmailAndPassword,
+      signOut
+    } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+    import {
+      doc,
+      getFirestore,
+      serverTimestamp,
+      setDoc,
+      writeBatch
+    } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyBzUfZBwJBzn1-BjRhR7humRqtO-9LC2Gs",
+      authDomain: "recitation-central-mteacher.firebaseapp.com",
+      projectId: "recitation-central-mteacher",
+      storageBucket: "recitation-central-mteacher.firebasestorage.app",
+      messagingSenderId: "490494017979",
+      appId: "1:490494017979:web:2e71c87ab0578ef4df6093",
+      measurementId: "G-BN4V8X3JE5"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    const authPanel = document.getElementById("authPanel");
+    const importPanel = document.getElementById("importPanel");
+    const teacherEmail = document.getElementById("teacherEmail");
+    const teacherPassword = document.getElementById("teacherPassword");
+    const signInButton = document.getElementById("signInButton");
+    const signOutButton = document.getElementById("signOutButton");
+    const authResult = document.getElementById("authResult");
+    const importText = document.getElementById("importText");
+    const importButton = document.getElementById("importButton");
+    const resultBox = document.getElementById("result");
+
+    function show(box, type, message) {
+      box.className = "result " + type;
+      box.textContent = message;
+    }
+
+    function normalize(value) {
+      return String(value || "").trim();
+    }
+
+    function normalizeSectionId(sectionName) {
+      return normalize(sectionName).replace(/[\/\\#?[\]]/g, "-") || "untitled-section";
+    }
+
+    function splitLine(line) {
+      if (line.includes("\t")) return line.split("\t").map(normalize);
+      const parts = [];
+      let current = "";
+      let quoted = false;
+      for (let index = 0; index < line.length; index += 1) {
+        const char = line[index];
+        if (char === '"') {
+          quoted = !quoted;
+        } else if (char === "," && !quoted) {
+          parts.push(normalize(current));
+          current = "";
+        } else {
+          current += char;
+        }
+      }
+      parts.push(normalize(current));
+      return parts;
+    }
+
+    function parseRows(text) {
+      const rows = [];
+      const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      lines.forEach((line) => {
+        const parts = splitLine(line).filter(Boolean);
+        if (parts.length < 3) return;
+        const looksLikeStudentFirst = /^\d/.test(parts[0]);
+        const studentId = looksLikeStudentFirst ? parts[0] : parts[1];
+        const fullName = looksLikeStudentFirst ? parts[1] : parts.slice(2).join(", ");
+        const section = looksLikeStudentFirst ? parts.slice(2).join(", ") : parts[0];
+        if (!studentId || !fullName || !section) return;
+        if (/student id/i.test(studentId) || /full name/i.test(fullName)) return;
+        rows.push({ studentId, fullName, section });
+      });
+      return rows;
+    }
+
+    async function importStudents() {
+      if (!auth.currentUser) {
+        show(resultBox, "error", "Please sign in first.");
+        return;
+      }
+
+      const rows = parseRows(importText.value);
+      if (!rows.length) {
+        show(resultBox, "error", "No valid rows found.");
+        return;
+      }
+
+      importButton.disabled = true;
+      show(resultBox, "loading", "Importing " + rows.length + " student(s)...");
+
+      try {
+        let batch = writeBatch(db);
+        let operationCount = 0;
+        let imported = 0;
+
+        for (const row of rows) {
+          batch.set(doc(db, "teachers", auth.currentUser.uid, "students", row.studentId), {
+            studentId: row.studentId,
+            fullName: row.fullName,
+            section: row.section,
+            totalPoints: 0,
+            latestPoints: 0,
+            updatedAt: serverTimestamp()
+          }, { merge: true });
+
+          batch.set(doc(db, "teachers", auth.currentUser.uid, "sections", normalizeSectionId(row.section)), {
+            name: row.section,
+            updatedAt: serverTimestamp()
+          }, { merge: true });
+
+          operationCount += 2;
+          imported += 1;
+
+          if (operationCount >= 450) {
+            await batch.commit();
+            batch = writeBatch(db);
+            operationCount = 0;
+          }
+        }
+
+        if (operationCount) {
+          await batch.commit();
+        }
+
+        show(resultBox, "success", "Imported/updated " + imported + " student(s).");
+      } catch (error) {
+        show(resultBox, "error", "Import failed:\n" + error.message);
+      } finally {
+        importButton.disabled = false;
+      }
+    }
+
+    async function signInTeacher() {
+      const email = teacherEmail.value.trim();
+      const password = teacherPassword.value;
+      if (!email || !password) {
+        show(authResult, "error", "Teacher email and password are required.");
+        return;
+      }
+      signInButton.disabled = true;
+      show(authResult, "loading", "Signing in...");
+      try {
+        await signInWithEmailAndPassword(auth, email, password);
+        teacherPassword.value = "";
+      } catch (error) {
+        show(authResult, "error", "Sign in failed:\n" + error.message);
+      } finally {
+        signInButton.disabled = false;
+      }
+    }
+
+    onAuthStateChanged(auth, (user) => {
+      const signedIn = Boolean(user);
+      authPanel.classList.toggle("signed-in", signedIn);
+      importPanel.hidden = !signedIn;
+      signInButton.hidden = signedIn;
+      signOutButton.hidden = !signedIn;
+      teacherEmail.disabled = signedIn;
+      teacherPassword.disabled = signedIn;
+      show(authResult, signedIn ? "success" : "queued", signedIn ? "Signed in: " + user.email : "Sign in required before importing.");
+    });
+
+    signInButton.addEventListener("click", signInTeacher);
+    signOutButton.addEventListener("click", () => signOut(auth));
+    teacherPassword.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") signInTeacher();
+    });
+    importButton.addEventListener("click", importStudents);
+  </script>
+</body>
+</html>

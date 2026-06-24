@@ -1,0 +1,30 @@
+{
+  "name": "Recitation Central Multi-Teacher",
+  "short_name": "Recitation MT",
+  "description": "Multi-teacher scanner, admin, import, and leaderboard app for recitation points.",
+  "start_url": "./mt-index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#fff7d6",
+  "theme_color": "#111827",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

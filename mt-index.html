@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111827">
+  <title>Recitation Central Multi-Teacher</title>
+  <link rel="manifest" href="mt-manifest.json">
+  <link rel="stylesheet" href="mt-style.css">
+</head>
+<body>
+  <main>
+    <header class="hero">
+      <div>
+        <div class="eyebrow">Recitation Central</div>
+        <h1>Multi-Teacher</h1>
+        <p>Separate scanner, admin, import, and leaderboard data for every signed-in teacher.</p>
+      </div>
+      <div class="pill">Option 2 v1</div>
+    </header>
+
+    <section id="authPanel" class="panel compact-panel">
+      <p class="panel-title">Teacher Account</p>
+      <div class="auth-row">
+        <div class="auth-field">
+          <label for="teacherEmail">Email</label>
+          <input id="teacherEmail" type="email" autocomplete="username" placeholder="Teacher email">
+        </div>
+        <div class="auth-field">
+          <label for="teacherPassword">Password</label>
+          <input id="teacherPassword" type="password" autocomplete="current-password" placeholder="Password">
+        </div>
+        <button id="signInButton" type="button">Sign In</button>
+        <button id="signOutButton" class="secondary" type="button" hidden>Sign Out</button>
+      </div>
+      <div id="authResult" class="result"></div>
+    </section>
+
+    <section class="panel">
+      <p class="panel-title">Teacher Tools</p>
+      <div class="grid">
+        <a class="card" href="mt-scanner.html">
+          <div class="icon">QR</div>
+          <h2>Scanner</h2>
+          <p>Record recitation points into your own teacher database.</p>
+        </a>
+        <a class="card" href="mt-admin.html">
+          <div class="icon">+</div>
+          <h2>Admin</h2>
+          <p>Add/edit/delete students, export totals, and export logs.</p>
+        </a>
+        <a class="card" href="mt-import.html">
+          <div class="icon">CSV</div>
+          <h2>Import</h2>
+          <p>Paste students from a sheet into your own account.</p>
+        </a>
+        <a id="viewerLink" class="card" href="#">
+          <div class="icon">TV</div>
+          <h2>Viewer</h2>
+          <p>Public leaderboard link for students or classroom TV.</p>
+        </a>
+      </div>
+      <div id="linkResult" class="result"></div>
+    </section>
+  </main>
+
+  <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("mt-service-worker.js").catch(() => {});
+    }
+  </script>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+    import {
+      getAuth,
+      onAuthStateChanged,
+      signInWithEmailAndPassword,
+      signOut
+    } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+    import {
+      doc,
+      getFirestore,
+      serverTimestamp,
+      setDoc
+    } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyBzUfZBwJBzn1-BjRhR7humRqtO-9LC2Gs",
+      authDomain: "recitation-central-mteacher.firebaseapp.com",
+      projectId: "recitation-central-mteacher",
+      storageBucket: "recitation-central-mteacher.firebasestorage.app",
+      messagingSenderId: "490494017979",
+      appId: "1:490494017979:web:2e71c87ab0578ef4df6093",
+      measurementId: "G-BN4V8X3JE5"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    const authPanel = document.getElementById("authPanel");
+    const teacherEmail = document.getElementById("teacherEmail");
+    const teacherPassword = document.getElementById("teacherPassword");
+    const signInButton = document.getElementById("signInButton");
+    const signOutButton = document.getElementById("signOutButton");
+    const authResult = document.getElementById("authResult");
+    const viewerLink = document.getElementById("viewerLink");
+    const linkResult = document.getElementById("linkResult");
+
+    function show(box, type, message) {
+      box.className = "result " + type;
+      box.textContent = message;
+    }
+
+    async function ensureTeacherProfile(user) {
+      await setDoc(doc(db, "teachers", user.uid), {
+        uid: user.uid,
+        email: user.email || "",
+        displayName: user.displayName || user.email || "Teacher",
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+    }
+
+    async function signInTeacher() {
+      const email = teacherEmail.value.trim();
+      const password = teacherPassword.value;
+
+      if (!email || !password) {
+        show(authResult, "error", "Teacher email and password are required.");
+        return;
+      }
+
+      signInButton.disabled = true;
+      show(authResult, "loading", "Signing in...");
+
+      try {
+        await signInWithEmailAndPassword(auth, email, password);
+        teacherPassword.value = "";
+      } catch (error) {
+        show(authResult, "error", "Sign in failed:\n" + error.message);
+      } finally {
+        signInButton.disabled = false;
+      }
+    }
+
+    onAuthStateChanged(auth, async (user) => {
+      const signedIn = Boolean(user);
+      authPanel.classList.toggle("signed-in", signedIn);
+      signInButton.hidden = signedIn;
+      signOutButton.hidden = !signedIn;
+      teacherEmail.disabled = signedIn;
+      teacherPassword.disabled = signedIn;
+
+      if (!signedIn) {
+        viewerLink.href = "#";
+        show(authResult, "queued", "Sign in to activate your teacher tools.");
+        show(linkResult, "queued", "Viewer link appears after sign in.");
+        return;
+      }
+
+      await ensureTeacherProfile(user);
+      const url = new URL("mt-view.html", window.location.href);
+      url.searchParams.set("teacher", user.uid);
+      viewerLink.href = url.pathname + url.search;
+      show(authResult, "success", "Signed in: " + user.email);
+      show(linkResult, "success", "Your public viewer link is ready.");
+    });
+
+    signInButton.addEventListener("click", signInTeacher);
+    signOutButton.addEventListener("click", () => signOut(auth));
+    teacherPassword.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") signInTeacher();
+    });
+  </script>
+</body>
+</html>

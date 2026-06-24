@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111827">
+  <title>Multi-Teacher Admin</title>
+  <link rel="manifest" href="mt-manifest.json">
+  <link rel="stylesheet" href="mt-style.css">
+</head>
+<body>
+  <main>
+    <header class="hero">
+      <div>
+        <div class="eyebrow">Recitation Central</div>
+        <h1>Admin</h1>
+        <p>Manage only the students and logs under your signed-in teacher account.</p>
+      </div>
+      <a class="home-link" href="mt-index.html">Home</a>
+    </header>
+
+    <section id="authPanel" class="panel compact-panel">
+      <p class="panel-title">Teacher Sign In</p>
+      <div class="auth-row">
+        <div class="auth-field">
+          <label for="teacherEmail">Email</label>
+          <input id="teacherEmail" type="email" autocomplete="username" placeholder="Teacher email">
+        </div>
+        <div class="auth-field">
+          <label for="teacherPassword">Password</label>
+          <input id="teacherPassword" type="password" autocomplete="current-password" placeholder="Password">
+        </div>
+        <button id="signInButton" type="button">Sign In</button>
+        <button id="signOutButton" class="secondary" type="button" hidden>Sign Out</button>
+      </div>
+      <div id="authResult" class="result"></div>
+    </section>
+
+    <div id="result" class="result"></div>
+
+    <section id="adminPanel" class="panel" hidden>
+      <div class="panel-title">
+        <span>My Students</span>
+        <button id="openModalButton" type="button" style="width:52px;min-height:46px;background:linear-gradient(135deg,var(--yellow),var(--gold));color:var(--black);font-size:24px;">+</button>
+      </div>
+
+      <div class="filter-row">
+        <div>
+          <label for="sectionFilter">Section</label>
+          <select id="sectionFilter"><option value="">All sections</option></select>
+        </div>
+        <div>
+          <label for="sortSelect">Sort</label>
+          <select id="sortSelect">
+            <option value="pointsDesc">Most Points</option>
+            <option value="latest">Latest Recitation</option>
+            <option value="az">Name A-Z</option>
+            <option value="pointsAsc">Lowest Points</option>
+          </select>
+        </div>
+        <button id="refreshButton" class="secondary" type="button">Reconnect</button>
+        <button id="exportTotalsButton" class="secondary" type="button">Export Totals</button>
+        <button id="exportLogsButton" class="secondary" type="button">Export Logs</button>
+      </div>
+
+      <div style="margin-top:10px;">
+        <label for="searchInput">Search</label>
+        <input id="searchInput" type="search" placeholder="Search student name or ID">
+      </div>
+
+      <div id="summary" class="result"></div>
+      <div id="studentList" class="list"></div>
+    </section>
+  </main>
+
+  <div id="studentModal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-header">
+        <h2 id="modalTitle">Add Student</h2>
+        <button id="closeModalButton" class="close-button" type="button">x</button>
+      </div>
+
+      <div class="form-grid">
+        <div>
+          <label for="studentIdInput">Student ID</label>
+          <input id="studentIdInput" type="text" placeholder="Student ID">
+        </div>
+        <div>
+          <label for="fullNameInput">Full Name</label>
+          <input id="fullNameInput" type="text" placeholder="Full Name">
+        </div>
+        <div>
+          <label for="sectionInput">Section</label>
+          <input id="sectionInput" type="text" list="sectionOptions" placeholder="Section">
+          <datalist id="sectionOptions"></datalist>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button id="addButton" type="button">Add Student</button>
+        <button id="saveButton" class="secondary" type="button">Save Edit</button>
+        <button id="deleteButton" class="danger delete-button" type="button">Delete Student</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("mt-service-worker.js").catch(() => {});
+    }
+  </script>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+    import {
+      getAuth,
+      onAuthStateChanged,
+      signInWithEmailAndPassword,
+      signOut
+    } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+    import {
+      collection,
+      deleteDoc,
+      doc,
+      getDocs,
+      getFirestore,
+      onSnapshot,
+      orderBy,
+      query,
+      serverTimestamp,
+      setDoc
+    } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyBzUfZBwJBzn1-BjRhR7humRqtO-9LC2Gs",
+      authDomain: "recitation-central-mteacher.firebaseapp.com",
+      projectId: "recitation-central-mteacher",
+      storageBucket: "recitation-central-mteacher.firebasestorage.app",
+      messagingSenderId: "490494017979",
+      appId: "1:490494017979:web:2e71c87ab0578ef4df6093",
+      measurementId: "G-BN4V8X3JE5"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    const authPanel = document.getElementById("authPanel");
+    const teacherEmail = document.getElementById("teacherEmail");
+    const teacherPassword = document.getElementById("teacherPassword");
+    const signInButton = document.getElementById("signInButton");
+    const signOutButton = document.getElementById("signOutButton");
+    const authResult = document.getElementById("authResult");
+    const resultBox = document.getElementById("result");
+    const adminPanel = document.getElementById("adminPanel");
+    const sectionFilter = document.getElementById("sectionFilter");
+    const sortSelect = document.getElementById("sortSelect");
+    const searchInput = document.getElementById("searchInput");
+    const refreshButton = document.getElementById("refreshButton");
+    const exportTotalsButton = document.getElementById("exportTotalsButton");
+    const exportLogsButton = document.getElementById("exportLogsButton");
+    const summary = document.getElementById("summary");
+    const studentList = document.getElementById("studentList");
+    const openModalButton = document.getElementById("openModalButton");
+    const studentModal = document.getElementById("studentModal");
+    const modalTitle = document.getElementById("modalTitle");
+    const closeModalButton = document.getElementById("closeModalButton");
+    const studentIdInput = document.getElementById("studentIdInput");
+    const fullNameInput = document.getElementById("fullNameInput");
+    const sectionInput = document.getElementById("sectionInput");
+    const sectionOptions = document.getElementById("sectionOptions");
+    const addButton = document.getElementById("addButton");
+    const saveButton = document.getElementById("saveButton");
+    const deleteButton = document.getElementById("deleteButton");
+
+    let allStudents = [];
+    let allSections = [];
+    let unsubscribeStudents = null;
+    let unsubscribeSections = null;
+
+    function show(box, type, message) {
+      box.className = "result " + type;
+      box.textContent = message;
+    }
+
+    function hide(box) {
+      box.className = "result";
+      box.textContent = "";
+    }
+
+    function normalize(value) {
+      return String(value || "").trim();
+    }
+
+    function normalizeSectionId(sectionName) {
+      return normalize(sectionName).replace(/[\/\\#?[\]]/g, "-") || "untitled-section";
+    }
+
+    function teacherDocPath(...parts) {
+      return ["teachers", auth.currentUser.uid, ...parts];
+    }
+
+    function formatTimestamp(value) {
+      if (!value || typeof value.toMillis !== "function") return { millis: 0, text: "" };
+      const millis = value.toMillis();
+      return {
+        millis,
+        text: new Date(millis).toLocaleString("en-PH", {
+          month: "short",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit"
+        })
+      };
+    }
+
+    function formatCsvTimestamp(value) {
+      const date = value && typeof value.toDate === "function" ? value.toDate() : null;
+      if (!date || Number.isNaN(date.getTime())) return "";
+      return date.toLocaleString("en-PH", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      });
+    }
+
+    function normalizeStudent(docSnap) {
+      const data = docSnap.data() || {};
+      const latest = formatTimestamp(data.latestAt);
+      return {
+        studentId: normalize(data.studentId || docSnap.id),
+        fullName: normalize(data.fullName),
+        section: normalize(data.section),
+        totalPoints: Number(data.totalPoints) || 0,
+        latestPoints: Number(data.latestPoints) || 0,
+        latestMillis: latest.millis,
+        latestText: latest.text
+      };
+    }
+
+    function renderSections() {
+      const current = sectionFilter.value;
+      sectionFilter.innerHTML = '<option value="">All sections</option>';
+      sectionOptions.innerHTML = "";
+      allSections.forEach((sectionName) => {
+        const option = document.createElement("option");
+        option.value = sectionName;
+        option.textContent = sectionName;
+        sectionFilter.appendChild(option);
+        const dataOption = document.createElement("option");
+        dataOption.value = sectionName;
+        sectionOptions.appendChild(dataOption);
+      });
+      sectionFilter.value = allSections.includes(current) ? current : "";
+    }
+
+    function getVisibleStudents() {
+      const selectedSection = sectionFilter.value;
+      const searchText = searchInput.value.trim().toLowerCase();
+      const sortValue = sortSelect.value;
+      const students = allStudents.filter((student) => {
+        if (selectedSection && student.section !== selectedSection) return false;
+        if (!searchText) return true;
+        return [student.studentId, student.fullName, student.section].join(" ").toLowerCase().includes(searchText);
+      }).slice();
+
+      if (sortValue === "latest") {
+        students.sort((a, b) => b.latestMillis - a.latestMillis || a.fullName.localeCompare(b.fullName));
+      } else if (sortValue === "pointsAsc") {
+        students.sort((a, b) => a.totalPoints - b.totalPoints || a.fullName.localeCompare(b.fullName));
+      } else if (sortValue === "az") {
+        students.sort((a, b) => a.fullName.localeCompare(b.fullName));
+      } else {
+        students.sort((a, b) => b.totalPoints - a.totalPoints || b.latestMillis - a.latestMillis || a.fullName.localeCompare(b.fullName));
+      }
+      return students;
+    }
+
+    function renderStudents() {
+      const students = getVisibleStudents();
+      studentList.innerHTML = "";
+      show(summary, students.length ? "queued" : "error", students.length ? students.length + " student(s) shown." : "No students found.");
+
+      students.forEach((student) => {
+        const card = document.createElement("div");
+        card.className = "row-card";
+        card.tabIndex = 0;
+        card.setAttribute("role", "button");
+        card.innerHTML = '<div><div class="name"></div><div class="meta"></div></div><div class="points"></div>';
+        card.querySelector(".name").textContent = student.fullName;
+        card.querySelector(".meta").textContent = student.studentId + " | " + student.section + (student.latestText ? "\nLatest: " + student.latestText : "");
+        card.querySelector(".points").textContent = student.totalPoints + " pts";
+        card.addEventListener("click", () => openModal("edit", student));
+        card.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openModal("edit", student);
+          }
+        });
+        studentList.appendChild(card);
+      });
+    }
+
+    function csvCell(value) {
+      const text = String(value ?? "");
+      return /[",\n\r]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+    }
+
+    function downloadCsv(filename, rows) {
+      const csv = rows.map((row) => row.map(csvCell).join(",")).join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function exportTotals() {
+      const students = allStudents.slice().sort((a, b) => a.section.localeCompare(b.section) || a.fullName.localeCompare(b.fullName));
+      if (!students.length) {
+        show(resultBox, "error", "No students to export.");
+        return;
+      }
+      downloadCsv("recitation-my-totals-" + new Date().toISOString().slice(0, 10) + ".csv", [
+        ["Section", "Student ID", "Full Name", "Total Points", "Latest Points", "Latest Recitation"],
+        ...students.map((student) => [student.section, student.studentId, student.fullName, student.totalPoints, student.latestPoints, student.latestText])
+      ]);
+      show(resultBox, "success", "Exported totals for " + students.length + " student(s).");
+    }
+
+    async function exportLogs() {
+      if (!auth.currentUser) return;
+      exportLogsButton.disabled = true;
+      show(resultBox, "loading", "Preparing logs export...");
+      try {
+        const snapshot = await getDocs(collection(db, ...teacherDocPath("recitationLogs")));
+        const logs = snapshot.docs.map((docSnap) => docSnap.data() || {}).sort((a, b) => {
+          const bTime = b.createdAt && typeof b.createdAt.toMillis === "function" ? b.createdAt.toMillis() : 0;
+          const aTime = a.createdAt && typeof a.createdAt.toMillis === "function" ? a.createdAt.toMillis() : 0;
+          return bTime - aTime;
+        });
+        downloadCsv("recitation-my-logs-" + new Date().toISOString().slice(0, 10) + ".csv", [
+          ["Date/Time", "Section", "Student ID", "Full Name", "Points", "Activity"],
+          ...logs.map((log) => [formatCsvTimestamp(log.createdAt), log.section || "", log.studentId || "", log.fullName || "", Number(log.points) || 0, log.activity || ""])
+        ]);
+        show(resultBox, "success", "Exported " + logs.length + " log record(s).");
+      } catch (error) {
+        show(resultBox, "error", "Logs export failed:\n" + error.message);
+      } finally {
+        exportLogsButton.disabled = false;
+      }
+    }
+
+    function openModal(mode, student) {
+      const isEdit = mode === "edit";
+      modalTitle.textContent = isEdit ? "Edit Student" : "Add Student";
+      addButton.style.display = isEdit ? "none" : "block";
+      saveButton.style.display = isEdit ? "block" : "none";
+      deleteButton.style.display = isEdit ? "block" : "none";
+      studentIdInput.disabled = isEdit;
+      studentIdInput.value = isEdit ? student.studentId : "";
+      fullNameInput.value = isEdit ? student.fullName : "";
+      sectionInput.value = isEdit ? student.section : sectionFilter.value || "";
+      studentModal.classList.add("active");
+      studentModal.setAttribute("aria-hidden", "false");
+    }
+
+    function closeModal() {
+      studentModal.classList.remove("active");
+      studentModal.setAttribute("aria-hidden", "true");
+      studentIdInput.disabled = false;
+    }
+
+    async function saveStudent(mode) {
+      const studentId = normalize(studentIdInput.value);
+      const fullName = normalize(fullNameInput.value);
+      const section = normalize(sectionInput.value);
+      if (!studentId || !fullName || !section) {
+        show(resultBox, "error", "Student ID, full name, and section are required.");
+        return;
+      }
+      addButton.disabled = true;
+      saveButton.disabled = true;
+      show(resultBox, "loading", "Saving student...");
+      try {
+        const existing = allStudents.find((student) => student.studentId === studentId);
+        await setDoc(doc(db, ...teacherDocPath("students", studentId)), {
+          studentId,
+          fullName,
+          section,
+          totalPoints: mode === "add" ? 0 : Number(existing?.totalPoints || 0),
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+        await setDoc(doc(db, ...teacherDocPath("sections", normalizeSectionId(section))), {
+          name: section,
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+        closeModal();
+        show(resultBox, "success", (mode === "add" ? "Added: " : "Updated: ") + fullName);
+      } catch (error) {
+        show(resultBox, "error", "Firebase save failed:\n" + error.message);
+      } finally {
+        addButton.disabled = false;
+        saveButton.disabled = false;
+      }
+    }
+
+    async function deleteStudent() {
+      const studentId = normalize(studentIdInput.value);
+      const fullName = normalize(fullNameInput.value);
+      if (!studentId) return;
+      if (!confirm("Delete " + (fullName || studentId) + " from your student list? Logs will stay.")) return;
+      deleteButton.disabled = true;
+      show(resultBox, "loading", "Deleting student...");
+      try {
+        await deleteDoc(doc(db, ...teacherDocPath("students", studentId)));
+        closeModal();
+        show(resultBox, "success", "Deleted: " + (fullName || studentId));
+      } catch (error) {
+        show(resultBox, "error", "Firebase delete failed:\n" + error.message);
+      } finally {
+        deleteButton.disabled = false;
+      }
+    }
+
+    function subscribeData() {
+      if (!auth.currentUser) return;
+      show(resultBox, "loading", "Connecting to Firebase...");
+      if (unsubscribeStudents) unsubscribeStudents();
+      if (unsubscribeSections) unsubscribeSections();
+      unsubscribeSections = onSnapshot(query(collection(db, ...teacherDocPath("sections")), orderBy("name")), (snapshot) => {
+        allSections = snapshot.docs.map((docSnap) => normalize((docSnap.data() || {}).name || docSnap.id)).filter(Boolean);
+        renderSections();
+        hide(resultBox);
+      }, (error) => show(resultBox, "error", "Sections error:\n" + error.message));
+      unsubscribeStudents = onSnapshot(collection(db, ...teacherDocPath("students")), (snapshot) => {
+        allStudents = snapshot.docs.map(normalizeStudent);
+        renderStudents();
+        hide(resultBox);
+      }, (error) => show(resultBox, "error", "Students error:\n" + error.message));
+    }
+
+    async function signInTeacher() {
+      const email = teacherEmail.value.trim();
+      const password = teacherPassword.value;
+      if (!email || !password) {
+        show(authResult, "error", "Teacher email and password are required.");
+        return;
+      }
+      signInButton.disabled = true;
+      show(authResult, "loading", "Signing in...");
+      try {
+        await signInWithEmailAndPassword(auth, email, password);
+        teacherPassword.value = "";
+      } catch (error) {
+        show(authResult, "error", "Sign in failed:\n" + error.message);
+      } finally {
+        signInButton.disabled = false;
+      }
+    }
+
+    onAuthStateChanged(auth, (user) => {
+      const signedIn = Boolean(user);
+      authPanel.classList.toggle("signed-in", signedIn);
+      adminPanel.hidden = !signedIn;
+      signInButton.hidden = signedIn;
+      signOutButton.hidden = !signedIn;
+      teacherEmail.disabled = signedIn;
+      teacherPassword.disabled = signedIn;
+      if (signedIn) {
+        show(authResult, "success", "Signed in: " + user.email);
+        subscribeData();
+      } else {
+        if (unsubscribeStudents) unsubscribeStudents();
+        if (unsubscribeSections) unsubscribeSections();
+        allStudents = [];
+        allSections = [];
+        show(authResult, "queued", "Sign in required before using admin.");
+      }
+    });
+
+    signInButton.addEventListener("click", signInTeacher);
+    signOutButton.addEventListener("click", () => signOut(auth));
+    teacherPassword.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") signInTeacher();
+    });
+    openModalButton.addEventListener("click", () => openModal("add"));
+    closeModalButton.addEventListener("click", closeModal);
+    studentModal.addEventListener("click", (event) => {
+      if (event.target === studentModal) closeModal();
+    });
+    addButton.addEventListener("click", () => saveStudent("add"));
+    saveButton.addEventListener("click", () => saveStudent("edit"));
+    deleteButton.addEventListener("click", deleteStudent);
+    sectionFilter.addEventListener("change", renderStudents);
+    sortSelect.addEventListener("change", renderStudents);
+    searchInput.addEventListener("input", renderStudents);
+    refreshButton.addEventListener("click", subscribeData);
+    exportTotalsButton.addEventListener("click", exportTotals);
+    exportLogsButton.addEventListener("click", exportLogs);
+  </script>
+</body>
+</html>

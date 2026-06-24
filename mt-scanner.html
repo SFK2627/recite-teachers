@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111827">
+  <title>Multi-Teacher Scanner</title>
+  <link rel="manifest" href="mt-manifest.json">
+  <link rel="stylesheet" href="mt-style.css">
+  <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+</head>
+<body>
+  <main>
+    <header class="hero">
+      <div>
+        <div class="eyebrow">Recitation Central</div>
+        <h1>Scanner</h1>
+        <p>Records are saved only under the signed-in teacher account.</p>
+      </div>
+      <a class="home-link" href="mt-index.html">Home</a>
+    </header>
+
+    <section id="authPanel" class="panel compact-panel">
+      <p class="panel-title">Teacher Sign In</p>
+      <div class="auth-row">
+        <div class="auth-field">
+          <label for="teacherEmail">Email</label>
+          <input id="teacherEmail" type="email" autocomplete="username" placeholder="Teacher email">
+        </div>
+        <div class="auth-field">
+          <label for="teacherPassword">Password</label>
+          <input id="teacherPassword" type="password" autocomplete="current-password" placeholder="Password">
+        </div>
+        <button id="signInButton" type="button">Sign In</button>
+        <button id="signOutButton" class="secondary" type="button" hidden>Sign Out</button>
+      </div>
+      <div id="authResult" class="result"></div>
+    </section>
+
+    <section id="scannerPanel" class="panel" hidden>
+      <label for="points">Points</label>
+      <input id="points" type="number" min="1" value="1">
+
+      <div class="quick-points">
+        <button class="quick-point active" type="button" data-points="1">+1</button>
+        <button class="quick-point" type="button" data-points="2">+2</button>
+        <button class="quick-point" type="button" data-points="3">+3</button>
+        <button class="quick-point" type="button" data-points="5">+5</button>
+      </div>
+
+      <div class="manual-row">
+        <input id="manualStudentId" type="text" placeholder="Type Student ID manually">
+        <button id="manualButton" type="button">Record</button>
+      </div>
+
+      <button id="startButton" type="button" style="margin-top:10px;background:linear-gradient(135deg,var(--yellow),var(--gold));color:var(--black);">Start Camera Scanner</button>
+      <div id="reader"></div>
+      <div id="result" class="result"></div>
+      <div id="recentList" class="list"></div>
+    </section>
+  </main>
+
+  <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("mt-service-worker.js").catch(() => {});
+    }
+  </script>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+    import {
+      getAuth,
+      onAuthStateChanged,
+      signInWithEmailAndPassword,
+      signOut
+    } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+    import {
+      collection,
+      doc,
+      getDoc,
+      getFirestore,
+      increment,
+      runTransaction,
+      serverTimestamp
+    } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyBzUfZBwJBzn1-BjRhR7humRqtO-9LC2Gs",
+      authDomain: "recitation-central-mteacher.firebaseapp.com",
+      projectId: "recitation-central-mteacher",
+      storageBucket: "recitation-central-mteacher.firebasestorage.app",
+      messagingSenderId: "490494017979",
+      appId: "1:490494017979:web:2e71c87ab0578ef4df6093",
+      measurementId: "G-BN4V8X3JE5"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    const authPanel = document.getElementById("authPanel");
+    const scannerPanel = document.getElementById("scannerPanel");
+    const teacherEmail = document.getElementById("teacherEmail");
+    const teacherPassword = document.getElementById("teacherPassword");
+    const signInButton = document.getElementById("signInButton");
+    const signOutButton = document.getElementById("signOutButton");
+    const authResult = document.getElementById("authResult");
+    const pointsInput = document.getElementById("points");
+    const manualStudentId = document.getElementById("manualStudentId");
+    const manualButton = document.getElementById("manualButton");
+    const startButton = document.getElementById("startButton");
+    const resultBox = document.getElementById("result");
+    const recentList = document.getElementById("recentList");
+    const quickPointButtons = Array.from(document.querySelectorAll(".quick-point"));
+
+    const scanner = new Html5Qrcode("reader", {
+      formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
+      verbose: false
+    });
+
+    const SCAN_COOLDOWN_MS = 6000;
+    const SCANNER_PAUSE_MS = 320;
+    let scannerStarted = false;
+    let scanPauseActive = false;
+    const recentLocks = new Map();
+    const recentRecords = [];
+
+    function show(box, type, message) {
+      box.className = "result " + type;
+      box.textContent = message;
+    }
+
+    function studentPath(studentId) {
+      return doc(db, "teachers", auth.currentUser.uid, "students", studentId);
+    }
+
+    function logsPath() {
+      return collection(db, "teachers", auth.currentUser.uid, "recitationLogs");
+    }
+
+    function getDefaultActivityName() {
+      return "Recitation - " + new Intl.DateTimeFormat("en-PH", {
+        year: "numeric",
+        month: "short",
+        day: "2-digit"
+      }).format(new Date());
+    }
+
+    function updateQuickPointButtons() {
+      quickPointButtons.forEach((button) => {
+        button.classList.toggle("active", button.dataset.points === pointsInput.value);
+      });
+    }
+
+    function cleanupLocks() {
+      const now = Date.now();
+      recentLocks.forEach((expiresAt, key) => {
+        if (expiresAt <= now) recentLocks.delete(key);
+      });
+    }
+
+    function addRecent(message) {
+      recentRecords.unshift(message);
+      if (recentRecords.length > 6) recentRecords.pop();
+      recentList.innerHTML = "";
+
+      recentRecords.forEach((record) => {
+        const item = document.createElement("div");
+        item.className = "row-card";
+        item.textContent = record;
+        recentList.appendChild(item);
+      });
+    }
+
+    async function recordStudent(value) {
+      if (!auth.currentUser) {
+        show(resultBox, "error", "Please sign in first.");
+        return;
+      }
+
+      cleanupLocks();
+      const studentId = String(value || "").trim();
+      const points = Number(pointsInput.value);
+
+      if (!studentId) {
+        show(resultBox, "error", "Please scan or type a Student ID.");
+        return;
+      }
+
+      if (!Number.isFinite(points) || points <= 0) {
+        show(resultBox, "error", "Invalid points.");
+        return;
+      }
+
+      const lockKey = studentId.toUpperCase() + "::" + points;
+      if (recentLocks.has(lockKey)) {
+        show(resultBox, "queued", "Duplicate scan ignored for " + studentId + ".");
+        return;
+      }
+
+      recentLocks.set(lockKey, Date.now() + SCAN_COOLDOWN_MS);
+      show(resultBox, "loading", "Saving " + studentId + "...");
+
+      try {
+        const studentRef = studentPath(studentId);
+        const studentSnap = await getDoc(studentRef);
+
+        if (!studentSnap.exists()) {
+          recentLocks.delete(lockKey);
+          show(resultBox, "error", "Student ID not found in your teacher account: " + studentId);
+          return;
+        }
+
+        const student = studentSnap.data() || {};
+        const logRef = doc(logsPath());
+
+        await runTransaction(db, async (transaction) => {
+          transaction.update(studentRef, {
+            totalPoints: increment(points),
+            latestAt: serverTimestamp(),
+            latestPoints: points,
+            updatedAt: serverTimestamp()
+          });
+
+          transaction.set(logRef, {
+            studentId,
+            fullName: student.fullName || "",
+            section: student.section || "",
+            points,
+            activity: getDefaultActivityName(),
+            createdAt: serverTimestamp()
+          });
+        });
+
+        show(resultBox, "success", "Recorded: " + (student.fullName || studentId) + " +" + points);
+        addRecent((student.fullName || studentId) + " +" + points + "\n" + (student.section || ""));
+      } catch (error) {
+        recentLocks.delete(lockKey);
+        show(resultBox, "error", "Firebase save failed:\n" + error.message);
+      }
+    }
+
+    function pauseScannerBriefly() {
+      if (!scannerStarted || scanPauseActive) return;
+      scanPauseActive = true;
+      try { scanner.pause(true); } catch (error) {}
+      setTimeout(() => {
+        scanPauseActive = false;
+        if (!scannerStarted) return;
+        try { scanner.resume(); } catch (error) {}
+      }, SCANNER_PAUSE_MS);
+    }
+
+    async function startScanner() {
+      if (scannerStarted) return;
+      startButton.disabled = true;
+      show(resultBox, "loading", "Starting camera...");
+
+      try {
+        await scanner.start(
+          { facingMode: "environment" },
+          { fps: 15, qrbox: { width: 220, height: 220 }, aspectRatio: 1, disableFlip: true },
+          (decodedText) => {
+            if (scanPauseActive) return;
+            pauseScannerBriefly();
+            recordStudent(decodedText);
+          }
+        );
+        scannerStarted = true;
+        show(resultBox, "success", "Camera scanner ready.");
+      } catch (error) {
+        startButton.disabled = false;
+        show(resultBox, "error", "Camera Error:\n" + error.message);
+      }
+    }
+
+    async function stopScannerIfNeeded() {
+      if (!scannerStarted) return;
+      try { await scanner.stop(); } catch (error) {}
+      scannerStarted = false;
+      startButton.disabled = false;
+    }
+
+    async function signInTeacher() {
+      const email = teacherEmail.value.trim();
+      const password = teacherPassword.value;
+
+      if (!email || !password) {
+        show(authResult, "error", "Teacher email and password are required.");
+        return;
+      }
+
+      signInButton.disabled = true;
+      show(authResult, "loading", "Signing in...");
+      try {
+        await signInWithEmailAndPassword(auth, email, password);
+        teacherPassword.value = "";
+      } catch (error) {
+        show(authResult, "error", "Sign in failed:\n" + error.message);
+      } finally {
+        signInButton.disabled = false;
+      }
+    }
+
+    onAuthStateChanged(auth, (user) => {
+      const signedIn = Boolean(user);
+      authPanel.classList.toggle("signed-in", signedIn);
+      scannerPanel.hidden = !signedIn;
+      signInButton.hidden = signedIn;
+      signOutButton.hidden = !signedIn;
+      teacherEmail.disabled = signedIn;
+      teacherPassword.disabled = signedIn;
+      show(authResult, signedIn ? "success" : "queued", signedIn ? "Signed in: " + user.email : "Sign in required before scanning.");
+    });
+
+    signInButton.addEventListener("click", signInTeacher);
+    signOutButton.addEventListener("click", async () => {
+      await stopScannerIfNeeded();
+      await signOut(auth);
+    });
+    teacherPassword.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") signInTeacher();
+    });
+    manualButton.addEventListener("click", () => {
+      const studentId = manualStudentId.value;
+      manualStudentId.value = "";
+      recordStudent(studentId);
+    });
+    manualStudentId.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        const studentId = manualStudentId.value;
+        manualStudentId.value = "";
+        recordStudent(studentId);
+      }
+    });
+    startButton.addEventListener("click", startScanner);
+    pointsInput.addEventListener("input", updateQuickPointButtons);
+    quickPointButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        pointsInput.value = button.dataset.points;
+        updateQuickPointButtons();
+      });
+    });
+  </script>
+</body>
+</html>

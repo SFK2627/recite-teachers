@@ -1,0 +1,35 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isOwner(teacherId) {
+      return request.auth != null && request.auth.uid == teacherId;
+    }
+
+    match /teachers/{teacherId} {
+      allow read: if true;
+      allow create, update: if isOwner(teacherId);
+      allow delete: if false;
+
+      match /students/{studentId} {
+        allow read: if true;
+        allow create, update, delete: if isOwner(teacherId);
+      }
+
+      match /sections/{sectionId} {
+        allow read: if true;
+        allow create, update, delete: if isOwner(teacherId);
+      }
+
+      match /recitationLogs/{logId} {
+        allow read: if isOwner(teacherId);
+        allow create: if isOwner(teacherId);
+        allow update, delete: if false;
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
